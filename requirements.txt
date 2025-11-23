@@ -1,0 +1,17 @@
+# Core libraries
+torch
+torchvision
+numpy
+Pillow
+
+# For OpenAI CLIP (official)
+git+https://github.com/openai/CLIP.git
+
+# For open_clip (recommended)
+open_clip_torch
+
+# Utilities
+tqdm
+scikit-learn
+matplotlib
+pandas
