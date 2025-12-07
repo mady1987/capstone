@@ -16,5 +16,8 @@ class Vocabulary:
             self.idx2word[self.idx] = word
             self.idx += 1
 
+    def __call__(self, word):
+        return self.word2idx.get(word, self.word2idx["<unk>"])
+
     def __len__(self):
         return len(self.word2idx)
