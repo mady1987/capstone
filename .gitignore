@@ -3,3 +3,4 @@ venv
 phase_2/data
 *.pth
 models
+__pycache__
