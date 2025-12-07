@@ -6,21 +6,24 @@ import nltk
 
 
 class CocoDataset(Dataset):
-    def __init__(self, root, json_path, vocab, transform=None, max_samples=5000):
+    def __init__(self, root, json_path, vocab, transform=None, max_samples=None):
         self.root = root
         self.coco = COCO(json_path)
-        self.ids = list(self.coco.anns.keys())[:max_samples]
+        self.ids = self.coco.getImgIds()
         self.vocab = vocab
         self.transform = transform
+        if max_samples:
+            self.ids = self.ids[:max_samples]
 
     def __len__(self):
         return len(self.ids)
 
     def __getitem__(self, idx):
-        ann_id = self.ids[idx]
-        caption_data = self.coco.anns[ann_id]
-        img_id = caption_data['image_id']
-        caption = caption_data['caption']
+        vocab = self.vocab
+        img_id = self.ids[idx]
+        
+        ann_ids = self.coco.getAnnIds(imgIds=img_id)
+        caption = self.coco.loadAnns(ann_ids)[0]["caption"]
 
         path = self.coco.loadImgs(img_id)[0]['file_name']
         image = Image.open(f"{self.root}/{path}").convert("RGB")
