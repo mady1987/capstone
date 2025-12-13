@@ -7,5 +7,5 @@ __pycache__
 phase_2_flikr/__pycache__
 phase_1/__pycache__
 phase_2_flikr/models
-phase_2_flikr/test
+test
 flickr30k_images
