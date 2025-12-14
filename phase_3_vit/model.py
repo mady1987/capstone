@@ -2,7 +2,8 @@ import torch.nn as nn
 import torchvision.models as models
 import torch
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from phase3_flikr import Attention
+from attention import Attention
+import timm
 
 class AttentionEncoderCNN(nn.Module):
     def __init__(self, embed_size):
@@ -24,6 +25,31 @@ class AttentionEncoderCNN(nn.Module):
         # print(features.shape)
         # features = self.bn(self.embed(features))
         return features
+    
+class AttentionEncoderViT(nn.Module):
+    def __init__(self, embed_size):
+        super().__init__()
+        self.vit = timm.create_model(
+            "vit_base_patch32_224",
+            pretrained=True,
+            num_classes=0   # returns features directly
+        )
+        self.feat_dim = self.vit.num_features  # 768
+        self.proj = nn.Linear(self.feat_dim, embed_size)
+
+    def forward(self, images):
+        """
+        images: [B, 3, 224, 224]
+        returns: [B, N, embed_size]
+        """
+        # timm returns patch tokens if forward_features is used
+        tokens = self.vit.forward_features(images)  # [B, N+1, 768]
+
+        # Remove CLS token
+        patch_tokens = tokens[:, 1:, :]             # [B, N, 768]
+
+        patch_tokens = self.proj(patch_tokens)      # [B, N, embed_size]
+        return patch_tokens
     
 class AttentionDecoderRNN(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab_size, encoder_dim, attention_dim, dropout=0.3):
@@ -54,7 +80,7 @@ class AttentionDecoderRNN(nn.Module):
         """
 
         batch_size = encoder_out.size(0)
-        max_len = max(lengths) - 1   # remove <end>
+        max_len = lengths.max().item() - 1  # remove <end>
 
         # ---- Teacher forcing: feed caption[:-1] ----
         captions_in = captions[:, :-1]   # remove <end> token
@@ -66,14 +92,28 @@ class AttentionDecoderRNN(nn.Module):
         alphas = torch.zeros(batch_size, max_len, encoder_out.size(1)).to(encoder_out.device)
 
         for t in range(max_len):
-            context, alpha = self.attention(encoder_out, h)
+            batch_size_t = sum(l > t for l in lengths)
 
-            lstm_input = torch.cat([embeddings[:, t], context], dim=1)
-            h, c = self.lstm(lstm_input, (h, c))
+            context, alpha = self.attention(
+                encoder_out[:batch_size_t],
+                h[:batch_size_t]
+            )
 
-            preds = self.linear(self.dropout(h))
+            lstm_input = torch.cat(
+                [embeddings[:batch_size_t, t], context], dim=1
+            )
 
-            outputs[:, t] = preds
-            alphas[:, t] = alpha
+            h_new, c_new = self.lstm(
+                lstm_input, (h[:batch_size_t], c[:batch_size_t])
+            )
+
+            # ❗ Create new tensors instead of in-place assignment
+            h = torch.cat([h_new, h[batch_size_t:]], dim=0)
+            c = torch.cat([c_new, c[batch_size_t:]], dim=0)
+
+            preds = self.linear(self.dropout(h_new))
+
+            outputs[:batch_size_t, t] = preds
+            alphas[:batch_size_t, t] = alpha
 
         return outputs, alphas
