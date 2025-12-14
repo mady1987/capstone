@@ -10,9 +10,9 @@ class EncoderCNN(nn.Module):
         for param in resnet.parameters():
             param.requires_grad = False
         modules = list(resnet.children())[:-1]  # delete the last fc layer.
-        self.resnet = nn.Sequential(*modules)   
-        self.embed = nn.Linear(resnet.fc.in_features, embed_size)
-        self.bn = nn.BatchNorm1d(embed_size)
+        self.resnet = nn.Sequential(*modules)   #[B, 2048]
+        self.embed = nn.Linear(resnet.fc.in_features, embed_size) #[2048, embed_size(256)]
+        self.bn = nn.BatchNorm1d(embed_size) # batch normalization [embed_size]
     
     def forward(self, images):
         features = self.resnet(images)
