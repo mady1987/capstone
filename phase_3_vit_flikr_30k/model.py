@@ -34,9 +34,9 @@ class AttentionEncoderViT(nn.Module):
             pretrained=True,
             num_classes=0   # returns features directly
         )
+
         for p in self.vit.parameters():
             p.requires_grad = False
-
         self.feat_dim = self.vit.num_features  # 768
         self.proj = nn.Linear(self.feat_dim, embed_size)
 
