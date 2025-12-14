@@ -25,9 +25,9 @@ class EncoderViT(nn.Module):
     def __init__(self, embed_size):
         super().__init__()
         self.vit = timm.create_model(
-            "vit_base_patch16_224",
+            "vit_base_patch32_224",
             pretrained=True,
-            num_classes=0   # 👈 returns features directly
+            num_classes=0   # returns features directly
         )
         self.embed = nn.Linear(self.vit.num_features, embed_size)
         self.norm = nn.LayerNorm(embed_size)
@@ -51,6 +51,7 @@ class DecoderRNN(nn.Module):
         )
 
         self.linear = nn.Linear(hidden_size, vocab_size)
+        self.text_proj = nn.Linear(hidden_size, embed_size)
 
     def forward(self, features, captions, lengths):
         """
