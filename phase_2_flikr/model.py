@@ -2,6 +2,7 @@ import torch.nn as nn
 import torchvision.models as models
 import torch
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+import timm
 
 class EncoderCNN(nn.Module):
     def __init__(self, embed_size):
@@ -19,7 +20,23 @@ class EncoderCNN(nn.Module):
         features = features.reshape(features.size(0), -1)
         features = self.bn(self.embed(features))
         return features
-    
+# VIT Encoder 
+class EncoderViT(nn.Module):
+    def __init__(self, embed_size):
+        super().__init__()
+        self.vit = timm.create_model(
+            "vit_base_patch16_224",
+            pretrained=True,
+            num_classes=0   # 👈 returns features directly
+        )
+        self.embed = nn.Linear(self.vit.num_features, embed_size)
+        self.norm = nn.LayerNorm(embed_size)
+
+    def forward(self, images):
+        features = self.vit(images)        # [B, 768]
+        features = self.embed(features)
+        return self.norm(features)
+
 class DecoderRNN(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab_size, num_layers=1, dropout=0.3):
         super(DecoderRNN, self).__init__()

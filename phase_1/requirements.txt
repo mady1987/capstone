@@ -15,3 +15,4 @@ tqdm
 scikit-learn
 matplotlib
 pandas
+timm
