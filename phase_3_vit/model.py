@@ -4,27 +4,6 @@ import torch
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from attention import Attention
 import timm
-
-class AttentionEncoderCNN(nn.Module):
-    def __init__(self, embed_size):
-        super(AttentionEncoderCNN, self).__init__()
-        resnet = models.resnet50(pretrained = True)
-        for param in resnet.parameters():
-            param.requires_grad = False
-        modules = list(resnet.children())[:-2]  # delete the last fc layer & Avg Pooling.
-        self.resnet = nn.Sequential(*modules)   
-        # self.embed = nn.Linear(resnet.fc.in_features, embed_size)
-        # self.bn = nn.BatchNorm1d(embed_size)
-    
-    def forward(self, images):
-        features = self.resnet(images)   # [B, 2048, 7, 7]
-        # print(features.shape)
-        features = features.permute(0, 2, 3, 1) # [B, 7, 7, 2048]
-        # print(features.shape)
-        features = features.view(features.size(0), -1, features.size(-1)) # [B, 49, 2048]
-        # print(features.shape)
-        # features = self.bn(self.embed(features))
-        return features
     
 class AttentionEncoderViT(nn.Module):
     def __init__(self, embed_size):
@@ -60,10 +39,19 @@ class AttentionDecoderRNN(nn.Module):
 
         self.embed = nn.Embedding(vocab_size, embed_size)
         self.attention = Attention(attention_dim=attention_dim, decoder_dim=hidden_size, encoder_dim=encoder_dim)
-        self.lstm = nn.LSTMCell(
-            embed_size+encoder_dim,
-            hidden_size
+        # self.lstm = nn.LSTMCell(
+        #     embed_size+encoder_dim,
+        #     hidden_size
+        # )
+        
+        self.lstm = nn.LSTM(
+            input_size=embed_size + encoder_dim,
+            hidden_size=hidden_size,
+            batch_first=True
         )
+        # self.text_proj = nn.Linear(hidden_size, embed_size)
+        self.text_lstm = nn.LSTM(embed_size, hidden_size, batch_first=True)
+        self.sent_proj = nn.Linear(hidden_size, embed_size)   # sentence embedding for retrieval
 
         self.linear = nn.Linear(hidden_size, vocab_size)
         self.dropout = nn.Dropout(dropout)
@@ -71,8 +59,8 @@ class AttentionDecoderRNN(nn.Module):
     def init_hidden_state(self, encoder_out):
         batch_size = encoder_out.size(0)
         device = encoder_out.device
-        h = torch.zeros(batch_size, self.lstm.hidden_size).to(device)
-        c = torch.zeros(batch_size, self.lstm.hidden_size).to(device)
+        h = torch.zeros(1, batch_size, self.lstm.hidden_size).to(device)
+        c = torch.zeros(1, batch_size, self.lstm.hidden_size).to(device)
         return h, c
     
     def forward(self, encoder_out, captions, lengths):
@@ -99,24 +87,28 @@ class AttentionDecoderRNN(nn.Module):
 
             context, alpha = self.attention(
                 encoder_out[:batch_size_t],
-                h[:batch_size_t]
+                h[0, :batch_size_t, :]
             )
 
-            lstm_input = torch.cat(
-                [embeddings[:batch_size_t, t], context], dim=1
+            lstm_input = torch.cat([embeddings[:batch_size_t, t, :], context], dim=1).unsqueeze(1)
+            # shape: (batch_size_t, 1, embed+encoder_dim)
+
+            output, (h_new, c_new) = self.lstm(
+                lstm_input,
+                (h[:, :batch_size_t, :].contiguous(),
+                c[:, :batch_size_t, :].contiguous())
             )
 
-            h_new, c_new = self.lstm(
-                lstm_input, (h[:batch_size_t], c[:batch_size_t])
-            )
+            # output: (batch_size_t, 1, hidden) -> squeeze the time dim
+            output = output.squeeze(1)   # (batch_size_t, hidden)
 
             # ❗ Create new tensors instead of in-place assignment
-            h = torch.cat([h_new, h[batch_size_t:]], dim=0)
-            c = torch.cat([c_new, c[batch_size_t:]], dim=0)
+            h = torch.cat([h_new, h[:, batch_size_t:, :]], dim=1)
+            c = torch.cat([c_new, c[:, batch_size_t:, :]], dim=1)
 
-            preds = self.linear(self.dropout(h_new))
+            preds = self.linear(self.dropout(output.squeeze(1)))
 
-            outputs[:batch_size_t, t] = preds
-            alphas[:batch_size_t, t] = alpha
+            outputs[:batch_size_t, t, :] = preds
+            alphas[:batch_size_t, t, :] = alpha
 
         return outputs, alphas
