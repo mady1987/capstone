@@ -1,0 +1,1 @@
+python -m ipykernel install --user   --name ai-py310   --display-name "AI Python 3.10 (RTX 5070)"
