@@ -66,14 +66,14 @@ class TransformerDecoder(nn.Module):
         x = self.embed(captions) + self.pos_embed(positions)
         x = x * math.sqrt(self.embed_size)
 
-        padding_mask = (captions == self.pad_idx)
+        # padding_mask = (captions == self.pad_idx)
         attn_mask = nn.Transformer.generate_square_subsequent_mask(T).to(captions.device)
         
         out = self.decoder(
             tgt=x,
             memory=encoder_out,
             tgt_mask=attn_mask,
-            tgt_key_padding_mask=padding_mask,
+            # tgt_key_padding_mask=padding_mask,
             tgt_is_causal=True 
         )
 
