@@ -4,16 +4,6 @@ from PIL import Image
 import nltk
 import os
 import random
-
-# Update the folowing datset call class to handle flikr8k dataset formate
-
-
-import torch
-from torch.utils.data import Dataset
-from PIL import Image
-import nltk
-import os
-import random
 import csv
 
 class FlickrDataset(Dataset):
@@ -73,4 +63,4 @@ class FlickrDataset(Dataset):
 
         caption_tensor = torch.tensor(caption_indices)
 
-        return image, caption_tensor
+        return image, caption_tensor, img_name

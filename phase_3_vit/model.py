@@ -2,113 +2,128 @@ import torch.nn as nn
 import torchvision.models as models
 import torch
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from attention import Attention
 import timm
     
 class AttentionEncoderViT(nn.Module):
-    def __init__(self, embed_size):
+    def __init__(self):
         super().__init__()
         self.vit = timm.create_model(
             "vit_base_patch16_224",
             pretrained=True,
-            num_classes=0   # returns features directly
+            num_classes=0
         )
+
+        # 🔓 Unfreeze only last block + norm
         for p in self.vit.parameters():
             p.requires_grad = False
 
-        self.feat_dim = self.vit.num_features  # 768
-        self.proj = nn.Linear(self.feat_dim, embed_size)
+        for p in self.vit.blocks[-1].parameters():
+            p.requires_grad = True
+
+        for p in self.vit.norm.parameters():
+            p.requires_grad = True
 
     def forward(self, images):
-        """
-        images: [B, 3, 224, 224]
-        returns: [B, N, embed_size]
-        """
-        # timm returns patch tokens if forward_features is used
-        tokens = self.vit.forward_features(images)  # [B, N+1, 768]
+        return self.vit.forward_features(images)
 
-        # Remove CLS token
-        patch_tokens = tokens[:, 1:, :]             # [B, N, 768]
+class Attention(nn.Module):
+    def __init__(self, encoder_dim, decoder_dim, attention_dim):
+        super().__init__()
+        self.encoder_att = nn.Linear(encoder_dim, attention_dim)
+        self.decoder_att = nn.Linear(decoder_dim, attention_dim)
+        self.coverage_att = nn.Linear(1, attention_dim)
+        self.full_att = nn.Linear(attention_dim, 1)
 
-        patch_tokens = self.proj(patch_tokens)      # [B, N, embed_size]
-        return patch_tokens
-    
+    def forward(self, encoder_out, decoder_hidden, coverage):
+        att1 = self.encoder_att(encoder_out)
+        att2 = self.decoder_att(decoder_hidden).unsqueeze(1)
+        att3 = self.coverage_att(coverage.unsqueeze(2))
+        att = torch.tanh(att1 + att2 + att3)
+
+        alpha = torch.softmax(self.full_att(att).squeeze(2), dim=1)
+        context = (encoder_out * alpha.unsqueeze(2)).sum(dim=1)
+
+        coverage = coverage + alpha
+        return context, alpha, coverage
+   
 class AttentionDecoderRNN(nn.Module):
-    def __init__(self, embed_size, hidden_size, vocab_size, encoder_dim, attention_dim, dropout=0.3):
-        super(AttentionDecoderRNN, self).__init__()
+    def __init__(
+        self,
+        embed_size,
+        hidden_size,
+        vocab_size,
+        encoder_dim=768,   # ViT patch dim
+        attention_dim=256,
+        dropout=0.3
+    ):
+        super().__init__()
 
         self.embed = nn.Embedding(vocab_size, embed_size)
-        self.attention = Attention(attention_dim=attention_dim, decoder_dim=hidden_size, encoder_dim=encoder_dim)
-        # self.lstm = nn.LSTMCell(
-        #     embed_size+encoder_dim,
-        #     hidden_size
-        # )
-        
-        self.lstm = nn.LSTM(
-            input_size=embed_size + encoder_dim,
-            hidden_size=hidden_size,
-            batch_first=True
-        )
-        # self.text_proj = nn.Linear(hidden_size, embed_size)
-        self.text_lstm = nn.LSTM(embed_size, hidden_size, batch_first=True)
-        self.sent_proj = nn.Linear(hidden_size, embed_size)   # sentence embedding for retrieval
+        self.attention = Attention(encoder_dim, hidden_size, attention_dim)
 
-        self.linear = nn.Linear(hidden_size, vocab_size)
+        self.lstm = nn.LSTMCell(
+            embed_size + encoder_dim,
+            hidden_size
+        )
+
+        self.fc = nn.Linear(hidden_size, vocab_size)
         self.dropout = nn.Dropout(dropout)
 
-    def init_hidden_state(self, encoder_out):
-        batch_size = encoder_out.size(0)
-        device = encoder_out.device
-        h = torch.zeros(1, batch_size, self.lstm.hidden_size).to(device)
-        c = torch.zeros(1, batch_size, self.lstm.hidden_size).to(device)
-        return h, c
-    
-    def forward(self, encoder_out, captions, lengths):
+    def forward(self, encoder_out, captions, lengths, teacher_forcing_ratio):
         """
-        encoder_out: [B, 49, 2048]
-        captions:    [B, max_len]
-        lengths:     [B]
+        encoder_out: [B, N, encoder_dim]  (ViT patch embeddings)
+        captions:    [B, T]
         """
-
         batch_size = encoder_out.size(0)
-        max_len = lengths.max().item() - 1  # remove <end>
+        max_len = captions.size(1)
 
-        # ---- Teacher forcing: feed caption[:-1] ----
-        captions_in = captions[:, :-1]   # remove <end> token
+        embeddings = self.embed(captions)
+        h = torch.zeros(batch_size, self.lstm.hidden_size).to(encoder_out.device)
+        c = torch.zeros_like(h)
 
-        embeddings = self.embed(captions_in)    # [B, T-1, embed_size]
-        h, c = self.init_hidden_state(encoder_out)
+        outputs = []
 
-        outputs = torch.zeros(batch_size, max_len, self.linear.out_features).to(encoder_out.device)
-        alphas = torch.zeros(batch_size, max_len, encoder_out.size(1)).to(encoder_out.device)
+        coverage = torch.zeros(
+            encoder_out.size(0),
+            encoder_out.size(1),
+            device=encoder_out.device
+        )
 
-        for t in range(max_len):
-            batch_size_t = sum(l > t for l in lengths)
+        for t in range(max_len - 1):
+            context, alpha, coverage = self.attention(encoder_out, h, coverage)
 
-            context, alpha = self.attention(
-                encoder_out[:batch_size_t],
-                h[0, :batch_size_t, :]
-            )
+            if t == 0:
+                word_emb = embeddings[:, t]
+            else:
+                use_teacher = torch.rand(1).item() < teacher_forcing_ratio
+                if use_teacher:
+                    word_emb = embeddings[:, t]
+                else:
+                    word_emb = self.embed(preds.argmax(1))
 
-            lstm_input = torch.cat([embeddings[:batch_size_t, t, :], context], dim=1).unsqueeze(1)
-            # shape: (batch_size_t, 1, embed+encoder_dim)
+            lstm_input = torch.cat((word_emb, context), dim=1)
+            h, c = self.lstm(lstm_input, (h, c))
 
-            output, (h_new, c_new) = self.lstm(
-                lstm_input,
-                (h[:, :batch_size_t, :].contiguous(),
-                c[:, :batch_size_t, :].contiguous())
-            )
+            preds = self.fc(self.dropout(h))
+            outputs.append(preds)
 
-            # output: (batch_size_t, 1, hidden) -> squeeze the time dim
-            output = output.squeeze(1)   # (batch_size_t, hidden)
+        return torch.stack(outputs, dim=1)
 
-            # ❗ Create new tensors instead of in-place assignment
-            h = torch.cat([h_new, h[:, batch_size_t:, :]], dim=1)
-            c = torch.cat([c_new, c[:, batch_size_t:, :]], dim=1)
+class TextEncoder(nn.Module):
+    def __init__(self, vocab_size, embed_size=256, hidden_size=512):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, embed_size)
+        self.lstm = nn.LSTM(embed_size, hidden_size, batch_first=True)
+        self.proj = nn.Linear(hidden_size, embed_size)
 
-            preds = self.linear(self.dropout(output.squeeze(1)))
+    def forward(self, captions, lengths):
+        emb = self.embed(captions)  # [B, T, E]
 
-            outputs[:batch_size_t, t, :] = preds
-            alphas[:batch_size_t, t, :] = alpha
+        packed = pack_padded_sequence(
+            emb, lengths.cpu(), batch_first=True, enforce_sorted=False
+        )
 
-        return outputs, alphas
+        _, (h, _) = self.lstm(packed)     # h: [1, B, hidden]
+        sent = self.proj(h[-1])           # [B, embed_size]
+
+        return torch.nn.functional.normalize(sent, dim=1)
