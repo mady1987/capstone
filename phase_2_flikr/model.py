@@ -20,23 +20,39 @@ class EncoderCNN(nn.Module):
         features = features.reshape(features.size(0), -1)
         features = self.bn(self.embed(features))
         return features
+
 # VIT Encoder 
 class EncoderViT(nn.Module):
     def __init__(self, embed_size):
         super().__init__()
         self.vit = timm.create_model(
-            "vit_base_patch32_224",
+            "vit_base_patch16_224",
             pretrained=True,
             num_classes=0   # returns features directly
         )
         self.embed = nn.Linear(self.vit.num_features, embed_size)
         self.norm = nn.LayerNorm(embed_size)
+        self.dropout = nn.Dropout(0.3)
 
     def forward(self, images):
-        features = self.vit(images)        # [B, 768]
-        features = self.embed(features)
-        return self.norm(features)
+        x = self.vit.patch_embed(images)
+        cls_token = self.vit.cls_token.expand(x.size(0), -1, -1)
+        x = torch.cat((cls_token, x), dim=1)
+        x = self.vit.pos_drop(x + self.vit.pos_embed)
+        
+        for blk in self.vit.blocks:
+            x = blk(x)
+        x = self.vit.norm(x)
 
+        cls = x[:, 0]
+        mean = x[:, 1:].mean(dim=1)
+
+        features = cls + mean
+        features = self.embed(features)
+        features = self.norm(features)
+        features = self.dropout(features)
+        return features
+        
 class DecoderRNN(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab_size, num_layers=1, dropout=0.3):
         super(DecoderRNN, self).__init__()
